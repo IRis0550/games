@@ -128,7 +128,13 @@
                     mergePending.delete(bodyA.id);
                     mergePending.delete(bodyB.id);
 
-                    addCatBody(mx, my, newLevel);
+                    const newBody = addCatBody(mx, my, newLevel);
+                    // 合并时给新球一个随机弹射冲量
+                    Matter.Body.setVelocity(newBody, {
+                        x: (Math.random() - 0.5) * 6,
+                        y: -Math.random() * 5 - 2
+                    });
+                    Matter.Body.setAngularVelocity(newBody, (Math.random() - 0.5) * 0.8);
                     mergeEffects.push({ x: mx, y: my, r: CATS[newLevel].radius, alpha: 1 });
 
                     score += newLevel * newLevel * 10;
@@ -143,11 +149,13 @@
         function addCatBody(x, y, level) {
             const r = CATS[level].radius;
             const body = Bodies.circle(x, y, r, {
-                restitution: 0.3,
-                friction: 0.5,
-                frictionAir: 0.008,
+                restitution: 0.65,
+                friction: 0.3,
+                frictionAir: 0.002,
                 label: 'cat',
             });
+            // 投放时给随机初始旋转角速度
+            Matter.Body.setAngularVelocity(body, (Math.random() - 0.5) * 0.3);
             body._spawnTime = Date.now();
             Composite.add(world, body);
             catBodies.push({ body, level });
@@ -294,20 +302,12 @@
         function drawCat(x, y, r, level, alpha) {
             ctx.globalAlpha = alpha;
             ctx.shadowColor = CATS[level].color;
-            ctx.shadowBlur = 12;
-            ctx.beginPath();
-            ctx.arc(x, y, r, 0, Math.PI * 2);
-            ctx.fillStyle = CATS[level].color;
-            ctx.fill();
-            ctx.shadowBlur = 0;
-            ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-            ctx.font = `${r * 1.15}px serif`;
+            ctx.shadowBlur = r * 0.9;
+            ctx.font = `${r * 1.1}px serif`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillStyle = 'black';
             ctx.fillText(CATS[level].emoji, x, y + r * 0.05);
+            ctx.shadowBlur = 0;
             ctx.globalAlpha = 1;
             ctx.textBaseline = 'alphabetic';
         }
