@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>合成大猫咪</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0f0e17;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            min-height: 100vh;
+            padding-top: 20px;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            user-select: none;
+            touch-action: none;
+        }
+        canvas {
+            display: block;
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+            cursor: crosshair;
+        }
+        #new-game-btn {
+            margin-top: 15px;
+            padding: 12px 40px;
+            background: #ff6b6b;
+            color: white;
+            border: none;
+            border-radius: 50px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        #new-game-btn:hover { background: #ff5252; }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <button id="new-game-btn" onclick="startNewGame()">🐱 新游戏</button>
+
+    <script>
+        const { Engine, Events, Bodies, Composite, Runner } = Matter;
+
+        const W = 360, H = 640;
+        const PANEL_H = 80;
+        const WALL_T = 40;
+        const DROP_Y = PANEL_H + 45;
+        const DANGER_Y = PANEL_H + 28;
+
+        const CATS = [
+            { emoji: '😼', radius: 22,  color: '#ffb3c6' },
+            { emoji: '🐱', radius: 30,  color: '#ffd6a5' },
+            { emoji: '🐈', radius: 38,  color: '#fdffb6' },
+            { emoji: '😺', radius: 47,  color: '#caffbf' },
+            { emoji: '😸', radius: 57,  color: '#9bf6ff' },
+            { emoji: '😻', radius: 67,  color: '#a0c4ff' },
+            { emoji: '🙀', radius: 78,  color: '#bdb2ff' },
+            { emoji: '😾', radius: 90,  color: '#ffc6ff' },
+            { emoji: '🐯', radius: 103, color: '#ffb347' },
+            { emoji: '🦁', radius: 117, color: '#ff9f1c' },
+            { emoji: '👑🐱', radius: 133, color: '#ff6b6b' },
+        ];
+
+        const canvas = document.getElementById('gameCanvas');
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = W * dpr;
+        canvas.height = H * dpr;
+        canvas.style.width = W + 'px';
+        canvas.style.height = H + 'px';
+        const ctx = canvas.getContext('2d');
+        ctx.scale(dpr, dpr);
+
+        let engine, runner, world;
+        let catBodies = [];
+        let score = 0;
+        let bestScore = parseInt(localStorage.getItem('catMergeBest')) || 0;
+        let currentLevel = 0;
+        let nextLevel = 0;
+        let dropX = W / 2;
+        let gameOver = false;
+        let canDrop = true;
+        let mergePending = new Set();
+        let mergeEffects = [];
+
+        function initPhysics() {
+            engine = Engine.create({ gravity: { y: 2 } });
+            world = engine.world;
+            runner = Runner.create();
+
+            const ground = Bodies.rectangle(W / 2, H + WALL_T / 2, W * 2, WALL_T, { isStatic: true, label: 'wall' });
+            const wallL = Bodies.rectangle(-WALL_T / 2, H / 2, WALL_T, H * 2, { isStatic: true, label: 'wall' });
+            const wallR = Bodies.rectangle(W + WALL_T / 2, H / 2, WALL_T, H * 2, { isStatic: true, label: 'wall' });
+            Composite.add(world, [ground, wallL, wallR]);
+
+            Events.on(engine, 'collisionStart', handleCollision);
+            Runner.run(runner, engine);
+            requestAnimationFrame(gameLoop);
+        }
+
+        function handleCollision(event) {
+            for (const pair of event.pairs) {
+                const { bodyA, bodyB } = pair;
+                if (bodyA.label !== 'cat' || bodyB.label !== 'cat') continue;
+
+                const catA = catBodies.find(c => c.body.id === bodyA.id);
+                const catB = catBodies.find(c => c.body.id === bodyB.id);
+                if (!catA || !catB) continue;
+                if (catA.level !== catB.level) continue;
+                if (mergePending.has(bodyA.id) || mergePending.has(bodyB.id)) continue;
+                if (catA.level >= CATS.length - 1) continue;
+
+                mergePending.add(bodyA.id);
+                mergePending.add(bodyB.id);
+
+                const newLevel = catA.level + 1;
+                const mx = (bodyA.position.x + bodyB.position.x) / 2;
+                const my = (bodyA.position.y + bodyB.position.y) / 2;
+
+                setTimeout(() => {
+                    Composite.remove(world, bodyA);
+                    Composite.remove(world, bodyB);
+                    catBodies = catBodies.filter(c => c.body.id !== bodyA.id && c.body.id !== bodyB.id);
+                    mergePending.delete(bodyA.id);
+                    mergePending.delete(bodyB.id);
+
+                    addCatBody(mx, my, newLevel);
+                    mergeEffects.push({ x: mx, y: my, r: CATS[newLevel].radius, alpha: 1 });
+
+                    score += newLevel * newLevel * 10;
+                    if (score > bestScore) {
+                        bestScore = score;
+                        localStorage.setItem('catMergeBest', bestScore);
+                    }
+                }, 50);
+            }
+        }
+
+        function addCatBody(x, y, level) {
+            const r = CATS[level].radius;
+            const body = Bodies.circle(x, y, r, {
+                restitution: 0.3,
+                friction: 0.5,
+                frictionAir: 0.008,
+                label: 'cat',
+            });
+            body._spawnTime = Date.now();
+            Composite.add(world, body);
+            catBodies.push({ body, level });
+            return body;
+        }
+
+        function dropCat() {
+            if (!canDrop || gameOver) return;
+            canDrop = false;
+
+            const r = CATS[currentLevel].radius;
+            const clampedX = Math.max(r + 5, Math.min(W - r - 5, dropX));
+            addCatBody(clampedX, DROP_Y, currentLevel);
+
+            currentLevel = nextLevel;
+            nextLevel = randomStartLevel();
+
+            setTimeout(() => {
+                canDrop = true;
+                setTimeout(checkGameOver, 1500);
+            }, 450);
+        }
+
+        function checkGameOver() {
+            if (gameOver || !canDrop) return;
+            for (const { body, level } of catBodies) {
+                const topY = body.position.y - CATS[level].radius;
+                if (topY < DANGER_Y && Date.now() - body._spawnTime > 1500) {
+                    gameOver = true;
+                    return;
+                }
+            }
+        }
+
+        function randomStartLevel() {
+            return Math.floor(Math.random() * 5);
+        }
+
+        function gameLoop() {
+            ctx.clearRect(0, 0, W, H);
+
+            // Background
+            const bg = ctx.createLinearGradient(0, 0, 0, H);
+            bg.addColorStop(0, '#1a1a2e');
+            bg.addColorStop(1, '#16213e');
+            ctx.fillStyle = bg;
+            ctx.fillRect(0, 0, W, H);
+
+            // Top panel
+            ctx.fillStyle = 'rgba(255,255,255,0.04)';
+            ctx.fillRect(0, 0, W, PANEL_H);
+
+            // Score labels
+            ctx.fillStyle = '#888';
+            ctx.font = '12px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('分数', 80, 22);
+            ctx.fillText('最高分', 280, 22);
+
+            ctx.fillStyle = 'white';
+            ctx.font = 'bold 26px Arial';
+            ctx.fillText(score, 80, 52);
+            ctx.fillText(bestScore, 280, 52);
+
+            // Next cat
+            ctx.fillStyle = '#888';
+            ctx.font = '12px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('下一只', W / 2, 18);
+            ctx.font = `${CATS[nextLevel].radius}px serif`;
+            ctx.fillText(CATS[nextLevel].emoji, W / 2, 62);
+
+            // Game area border
+            ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(2, PANEL_H, W - 4, H - PANEL_H - 2);
+
+            // Danger line
+            ctx.strokeStyle = 'rgba(255,80,80,0.45)';
+            ctx.setLineDash([8, 6]);
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(4, DANGER_Y);
+            ctx.lineTo(W - 4, DANGER_Y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Aim guide
+            if (canDrop && !gameOver) {
+                const r = CATS[currentLevel].radius;
+                const cx = Math.max(r + 5, Math.min(W - r - 5, dropX));
+
+                ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+                ctx.setLineDash([5, 7]);
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(cx, DROP_Y + r);
+                ctx.lineTo(cx, H);
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                drawCat(cx, DROP_Y, r, currentLevel, 0.7);
+            }
+
+            // Draw cats
+            for (const { body, level } of catBodies) {
+                ctx.save();
+                ctx.translate(body.position.x, body.position.y);
+                ctx.rotate(body.angle);
+                drawCat(0, 0, CATS[level].radius, level, 1);
+                ctx.restore();
+            }
+
+            // Merge effects
+            mergeEffects = mergeEffects.filter(e => e.alpha > 0);
+            for (const e of mergeEffects) {
+                e.alpha -= 0.04;
+                ctx.save();
+                ctx.globalAlpha = e.alpha;
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.arc(e.x, e.y, e.r * (1 + (1 - e.alpha) * 0.6), 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.restore();
+            }
+
+            // Game over overlay
+            if (gameOver) {
+                ctx.fillStyle = 'rgba(0,0,0,0.78)';
+                ctx.fillRect(0, 0, W, H);
+                ctx.fillStyle = 'white';
+                ctx.font = 'bold 42px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('游戏结束 😿', W / 2, H / 2 - 30);
+                ctx.fillStyle = '#aaa';
+                ctx.font = '22px Arial';
+                ctx.fillText('最终分数: ' + score, W / 2, H / 2 + 20);
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        function drawCat(x, y, r, level, alpha) {
+            ctx.globalAlpha = alpha;
+            ctx.shadowColor = CATS[level].color;
+            ctx.shadowBlur = 12;
+            ctx.beginPath();
+            ctx.arc(x, y, r, 0, Math.PI * 2);
+            ctx.fillStyle = CATS[level].color;
+            ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.font = `${r * 1.15}px serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = 'black';
+            ctx.fillText(CATS[level].emoji, x, y + r * 0.05);
+            ctx.globalAlpha = 1;
+            ctx.textBaseline = 'alphabetic';
+        }
+
+        function startNewGame() {
+            catBodies.forEach(({ body }) => Composite.remove(world, body));
+            catBodies = [];
+            mergePending.clear();
+            mergeEffects = [];
+            score = 0;
+            gameOver = false;
+            canDrop = true;
+            dropX = W / 2;
+            currentLevel = randomStartLevel();
+            nextLevel = randomStartLevel();
+        }
+
+        // Mouse
+        canvas.addEventListener('mousemove', e => {
+            const rect = canvas.getBoundingClientRect();
+            dropX = (e.clientX - rect.left) * (W / rect.width);
+        });
+        canvas.addEventListener('click', e => {
+            const rect = canvas.getBoundingClientRect();
+            dropX = (e.clientX - rect.left) * (W / rect.width);
+            dropCat();
+        });
+
+        // Touch
+        canvas.addEventListener('touchmove', e => {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            dropX = (e.touches[0].clientX - rect.left) * (W / rect.width);
+        }, { passive: false });
+        canvas.addEventListener('touchend', e => {
+            e.preventDefault();
+            dropCat();
+        }, { passive: false });
+
+        initPhysics();
+        startNewGame();
+    </script>
+</body>
+</html>
